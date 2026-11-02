@@ -53,7 +53,7 @@ var topic = (params.get('t') || '').replace(/[^a-zA-Z0-9_-]/g, '');
 var ctl = location.hash === '#control';
 var root = document.getElementById('root');
 var BASE = 'https://ntfy.sh/';
-var net = '…', vis = false;
+var net = '…', vis = false, LGD = {}, CH = {};
 if (ctl || !topic) document.body.className = 'ctl';
 
 function left(){ var t=S.t, v = t.run ? t.base - (Date.now()-t.at)/1000 : t.base; return Math.max(0, Math.ceil(v)); }
@@ -64,7 +64,7 @@ function esc(x){ return String(x).replace(/[&<>"]/g, function(c){return {'&':'&a
 function tc(h){ var m=/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(h); if(!m) return '#fff';
   var l=(0.299*parseInt(m[1],16)+0.587*parseInt(m[2],16)+0.114*parseInt(m[3],16)); return l>150 ? '#111' : '#fff'; }
 
-function lbox(T){ return LOGO[T.k] ? '<div class="lb"><img src="'+LOGO[T.k]+'"></div>' : ''; }
+function lbox(T){ var src = T.k==='own' ? LGD[T.lid] : LOGO[T.k]; return src ? '<div class="lb"><img src="'+src+'"></div>' : ''; }
 function cell(T,k){
   var st='background:'+esc(T.c)+';color:'+tc(T.c);
   return '<div class="cell" style="'+st+'"><span class="ab">'+esc(T.n)+'</span><span class="s">'+T.s+'</span></div>';
@@ -83,8 +83,9 @@ function bar(){
 
 function team(k){
   var T = S[k];
-  return '<div class="card"><div class="row"><select id="k'+k+'"><option value="vik"'+(T.k==='vik'?' selected':'')+'>Виктория</option><option value="bas"'+(T.k==='bas'?' selected':'')+'>Бастион</option><option value=""'+(!T.k?' selected':'')+'>Без логотипа</option></select>' +
+  return '<div class="card"><div class="row"><select id="k'+k+'"><option value="vik"'+(T.k==='vik'?' selected':'')+'>Виктория</option><option value="bas"'+(T.k==='bas'?' selected':'')+'>Бастион</option><option value="own"'+(T.k==='own'?' selected':'')+'>Свой логотип</option><option value=""'+(!T.k?' selected':'')+'>Без логотипа</option></select>' +
     '<input type="text" id="n'+k+'" value="'+esc(T.n)+'" style="max-width:110px"><input type="color" id="c'+k+'" value="'+T.c+'"></div>' +
+    '<div class="row" style="margin-top:8px"><button data-a="up'+k+'">Загрузить свой логотип</button><input type="file" id="f'+k+'" accept="image/*" hidden></div>' +
     '<div class="big2">'+T.s+'</div>' +
     '<div class="row"><button class="big g" data-a="'+k+'+">+1</button><button class="r" data-a="'+k+'-">−1</button></div></div>';
 }
@@ -122,6 +123,7 @@ function render(){
   ['a','b'].forEach(function(k){
     document.getElementById('n'+k).onchange = function(e){ S[k].n = e.target.value; send(); render(); };
     document.getElementById('c'+k).onchange = function(e){ S[k].c = e.target.value; send(); render(); };
+    document.getElementById('f'+k).onchange = function(e){ upload(k, e.target.files[0]); };
     document.getElementById('k'+k).onchange = function(e){
       var v = e.target.value; S[k].k = v; if (PRE[v]) { S[k].n = PRE[v].n; S[k].c = PRE[v].c; } send(); render(); };
   });
@@ -134,6 +136,7 @@ function parseT(str){
 
 function act(a){
   var n = Date.now();
+  if (a==='upa' || a==='upb'){ document.getElementById('f'+a[2]).click(); return; }
   if (a==='a+') S.a.s++; else if (a==='a-') S.a.s=Math.max(0,S.a.s-1);
   else if (a==='b+') S.b.s++; else if (a==='b-') S.b.s=Math.max(0,S.b.s-1);
   else if (a[0]==='p' && a.length===2) S.p = +a[1];
@@ -158,6 +161,30 @@ function send(){
     .catch(function(){ msg('нет связи, счёт не отправлен'); });
 }
 
+function upload(k, f){
+  if (!f) return;
+  var r = new FileReader();
+  r.onload = function(){ var im = new Image(); im.onload = function(){
+    var m = 100, d;
+    do {
+      var sc = Math.min(1, m/Math.max(im.width, im.height)), c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(im.width*sc)); c.height = Math.max(1, Math.round(im.height*sc));
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      d = c.toDataURL('image/png'); m -= 15;
+    } while (d.length > 24000 && m > 30);
+    var id = Math.random().toString(36).slice(2, 8);
+    LGD[id] = d; S[k].k = 'own'; S[k].lid = id; render();
+    var parts = []; for (var i=0; i<d.length; i+=2800) parts.push(d.slice(i, i+2800));
+    msg('отправка логотипа…');
+    var p = Promise.resolve();
+    parts.forEach(function(x, i){ p = p.then(function(){
+      return fetch(BASE + topic, {method:'POST', body: JSON.stringify({lg:1, id:id, i:i, n:parts.length, d:x})}).then(function(r){ if(!r.ok) throw 0; });
+    }); });
+    p.then(function(){ send(); }).catch(function(){ msg('логотип не отправился'); });
+  }; im.onerror = function(){ msg('не удалось прочитать картинку'); }; im.src = r.result; };
+  r.readAsDataURL(f);
+}
+
 function typing(){ var e = document.activeElement; return ctl && e && (e.tagName==='INPUT' || e.tagName==='SELECT'); }
 
 function listen(){
@@ -169,6 +196,7 @@ function listen(){
       var d = JSON.parse(ev.data);
       if (d.event !== 'message') return;
       var n = JSON.parse(d.message);
+      if (n && n.lg) { var o = CH[n.id] || (CH[n.id] = {p:[], c:0, n:n.n}); if (!o.p[n.i]) { o.p[n.i] = n.d; o.c++; } if (o.c === o.n) { LGD[n.id] = o.p.join(''); if (!typing()) render(); } return; }
       if (n && n.a && n.b && n.pp) { S = n; if (!typing()) render(); }
     } catch (e) {}
   };
